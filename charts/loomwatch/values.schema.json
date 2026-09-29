@@ -163,6 +163,15 @@
                   "type": "string",
                   "pattern": "^[0-9]+(s|m|h|d|w)$"
                 },
+                "shortTrendWindow": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(s|m|h|d|w)$"
+                },
+                "shortWindowMaxSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "Quota windows this long or shorter are measured over shortTrendWindow instead of trendWindow."
+                },
                 "maxHorizonSeconds": {
                   "type": "integer",
                   "minimum": 1,

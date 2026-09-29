@@ -81,22 +81,25 @@ in your fork of this file.
 
 ## LoomwatchQuotaBurnsBeforeReset
 
-`current + slope × seconds_until_reset > 100`, gated to windows resetting inside
+`current + rate × seconds_until_reset > 100`, gated to windows resetting inside
 `burn.maxHorizonSeconds`. For 30m, warning.
 
-**What it observed.** A prediction, not a measurement: at the rate of the last
-`burn.trendWindow`, this quota reaches 100% before its own window resets.
+**What it observed.** A prediction, not a measurement: at the pace of the last
+`burn.shortTrendWindow` (windows up to `burn.shortWindowMaxSeconds` long) or the
+last `burn.trendWindow` (longer ones), this quota reaches 100% before its own
+window resets. The pace counts rises only: quota the provider gave back in the
+middle of a window lowers the current reading, not the rate.
 
 **What it does not mean.** That it will happen. A single batch job inside the
 trend window can project a breach that never arrives. This is why the rule
 refuses to predict across horizons much longer than its trend window at all -
 extrapolating a day across a week is noise amplified, not evidence.
 
-**The first question: is the slope representative?** Look at the series over the
+**The first question: is the rate representative?** Look at the series over the
 trend window. A step that started when a job started, and is flat before and
 after, is not a trend. A steady climb is.
 
-- **Not representative** - no action. The alert clears when the slope flattens.
+- **Not representative** - no action. The alert clears when the rate falls.
   If one recurring job keeps triggering it, either the trend window is shorter
   than that job's period, or the job genuinely is the shape of your consumption.
 - **Representative** - act as for `LoomwatchQuotaCritical`, with the difference

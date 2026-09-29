@@ -112,10 +112,11 @@ fresh enough for the numbers below to mean anything. Quotas are sorted by how
 long they have left rather than by how full they are, because a plan that hit
 its ceiling yesterday is not the one nobody has acted on yet.
 
-A forecast that cannot be trusted says so. A trend measured across a window
-reset describes the boundary rather than the consumption, so those rows read
-"no forecast" instead of a confident number - which is a different statement
-from "not on track", and the board keeps them apart.
+A forecast that cannot be made says so. Rows whose provider publishes no reset
+time read "no forecast", which is a different statement from "won't breach",
+and the board keeps them apart. An account whose collector has stopped polling
+reads "stale data" and counts as needing attention, rather than looking calm
+on frozen numbers.
 
 Ownership is optional and, where configured, a `team` label routes each alert
 and filters the board. Requires Prometheus. GPL-3.0.

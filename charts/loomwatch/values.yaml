@@ -812,11 +812,21 @@ metrics:
     ## property of the series, not of its name: a token quota can reset weekly
     ## while a "general" quota resets every five hours.
     ##
-    ## @param metrics.prometheusRule.burn.trendWindow Range over which the burn slope is measured
+    ## The pace is the sum of the quota's rises between steps, per second of
+    ## observed time - not deriv() over its level and not rate(). A provider
+    ## that gives quota back mid-window turns the level into a sawtooth: a
+    ## line fitted through it describes the falls, and rate() counts every
+    ## fall as a reset to zero, adding the whole level after it.
+    ##
+    ## @param metrics.prometheusRule.burn.trendWindow Range over which the burn rate of longer windows is measured
+    ## @param metrics.prometheusRule.burn.shortTrendWindow Range over which the burn rate of short windows is measured
+    ## @param metrics.prometheusRule.burn.shortWindowMaxSeconds Quota windows this long or shorter use shortTrendWindow
     ## @param metrics.prometheusRule.burn.maxHorizonSeconds Do not predict for windows resetting further away than this
     ##
     burn:
       trendWindow: 24h
+      shortTrendWindow: 1h
+      shortWindowMaxSeconds: 21600
       maxHorizonSeconds: 172800
     ## @param metrics.prometheusRule.defaultRules.quotaHigh Enable the LoomwatchQuotaHigh rule
     ## @param metrics.prometheusRule.defaultRules.quotaCritical Enable the LoomwatchQuotaCritical rule

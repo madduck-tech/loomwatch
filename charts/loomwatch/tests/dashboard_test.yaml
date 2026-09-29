@@ -44,6 +44,45 @@ tests:
           path: data["loomwatch.json"]
           pattern: '"value": 600'
 
+  # The forecast queries drop stale accounts by comparing collector age with
+  # the hidden $stale_after constant. It has to move with pollInterval like the
+  # panel step does, or the table calls an account stale at a different age
+  # from the freshness bar beside it.
+  - it: calls an account stale at the same age in the queries as on the panel
+    set:
+      dashboard.enabled: true
+      pollInterval: 120
+    asserts:
+      - matchRegex:
+          path: data["loomwatch.json"]
+          pattern: '"name": "stale_after",[^}]*"query": "600"'
+      - notMatchRegex:
+          path: data["loomwatch.json"]
+          pattern: '"query": "300"'
+
+  # The table forecasts with the same trend windows the burn rule alerts on.
+  # Without the substitution, tuning burn.* moved the alert and left the table
+  # judging by the defaults.
+  - it: forecasts with the same trend windows as the burn rule
+    set:
+      dashboard.enabled: true
+      metrics.prometheusRule.burn.shortTrendWindow: 30m
+      metrics.prometheusRule.burn.trendWindow: 6h
+      metrics.prometheusRule.burn.shortWindowMaxSeconds: 3600
+    asserts:
+      - matchRegex:
+          path: data["loomwatch.json"]
+          pattern: '\[30m:2m\]'
+      - matchRegex:
+          path: data["loomwatch.json"]
+          pattern: '\[6h:5m\]'
+      - matchRegex:
+          path: data["loomwatch.json"]
+          pattern: '<= 3600\)'
+      - notMatchRegex:
+          path: data["loomwatch.json"]
+          pattern: '\[1h:2m\]|\[24h:5m\]|<= 21600'
+
   - it: leaves Grafana legend syntax alone
     set:
       dashboard.enabled: true

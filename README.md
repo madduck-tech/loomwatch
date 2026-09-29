@@ -82,13 +82,18 @@ line in a values file rather than a form somebody fills in after the fact.
 
 ![One account's quota windows over 36 hours](docs/screenshots/grafana-trend.png)
 
-The vertical drops are window resets, and they are why the forecast column
-sometimes says `no forecast` rather than a number. A trend measured across a
-reset describes the boundary, not the consumption - and a forecast built on it
-is an artefact. The board says so instead of printing a confident number.
+The vertical drops are window resets - and, for some providers, quota given
+back in the middle of a window. The forecast reads through them: its pace
+counts only what was consumed, over the last hour for windows of six hours or
+less and over the last day for longer ones, and what was given back shows up in
+the current reading instead.
 
-`not on track` and `no forecast` are different statements: the first is a
-finding, the second is the absence of one.
+The forecast column prints a duration only when the limit comes before the
+reset. Otherwise it says `won't breach` - a finding. `no forecast` is the
+absence of one: the provider publishes no reset time, or the series is too
+new to have a pace yet. `at limit` is a quota
+that is already out, and `stale data` is an account whose collector has
+stopped polling, so its figures are the last ones it got.
 
 ## Which providers reach `/metrics`
 

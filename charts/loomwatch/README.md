@@ -297,7 +297,9 @@ kubectl delete pvc my-release-loomwatch-data
 | `metrics.prometheusRule.runbookUrlBase` | Base URL for the runbook_url annotation on each alert | `https://github.com/madduck-tech/loomwatch/blob/main/docs/runbooks/README.md` |
 | `metrics.prometheusRule.highThreshold` | Utilisation percentage above which LoomwatchQuotaHigh fires | `80` |
 | `metrics.prometheusRule.criticalThreshold` | Utilisation percentage above which LoomwatchQuotaCritical fires | `95` |
-| `metrics.prometheusRule.burn.trendWindow` | Range over which the burn slope is measured | `24h` |
+| `metrics.prometheusRule.burn.trendWindow` | Range over which the burn rate of longer windows is measured | `24h` |
+| `metrics.prometheusRule.burn.shortTrendWindow` | Range over which the burn rate of short windows is measured | `1h` |
+| `metrics.prometheusRule.burn.shortWindowMaxSeconds` | Quota windows this long or shorter use shortTrendWindow | `21600` |
 | `metrics.prometheusRule.burn.maxHorizonSeconds` | Do not predict for windows resetting further away than this | `172800` |
 | `metrics.prometheusRule.defaultRules.quotaHigh` | Enable the LoomwatchQuotaHigh rule | `true` |
 | `metrics.prometheusRule.defaultRules.quotaCritical` | Enable the LoomwatchQuotaCritical rule | `true` |

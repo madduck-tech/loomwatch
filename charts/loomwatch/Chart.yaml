@@ -22,9 +22,9 @@ annotations:
       email: noreply@madduck-tech.invalid
   artifacthub.io/images: |
     - name: loomwatch
-      image: ghcr.io/madduck-tech/loomwatch:1.15.8
+      image: ghcr.io/madduck-tech/loomwatch:1.15.9
 apiVersion: v2
-appVersion: 1.15.8
+appVersion: 1.15.9
 description: Prometheus exporter for prepaid LLM subscription quotas - per account, per team, with alerts that name an owner. Exports how much of each plan is left so exhaustion is alerted on days early rather than discovered when a job fails.
 home: https://github.com/madduck-tech/loomwatch
 icon: https://raw.githubusercontent.com/madduck-tech/loomwatch/main/charts/loomwatch/logo.png
@@ -50,4 +50,4 @@ type: application
 # the same repository and is released with it, so two independent numbers would
 # only raise the question "which chart version carries that fix". The release
 # workflow refuses to publish when the two disagree.
-version: 1.15.8
+version: 1.15.9
