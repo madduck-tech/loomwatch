@@ -313,7 +313,7 @@
         "orientation": "horizontal",
         "displayMode": "basic",
         "text": {
-          "titleSize": 12,
+          "titleSize": 10,
           "valueSize": 18
         },
         "showUnfilled": true,

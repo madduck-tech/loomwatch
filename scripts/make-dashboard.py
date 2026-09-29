@@ -441,7 +441,11 @@ def headline():
             },
             "options": {
                 "orientation": "horizontal", "displayMode": "basic",
-                "text": {"titleSize": 12, "valueSize": 18},
+                # 10, not 12: Grafana gives the name a fixed share of the bar's
+                # width and clips the rest, and at 12 "minimax / minimax-2"
+                # rendered as "minimax / minim...". Placing the name on top
+                # instead hides it altogether at this panel height.
+                "text": {"titleSize": 10, "valueSize": 18},
                 "showUnfilled": True, "valueMode": "text",
                 "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
             },
