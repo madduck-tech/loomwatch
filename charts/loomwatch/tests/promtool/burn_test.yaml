@@ -14,6 +14,8 @@
 #              the one-hour pace sees it; a day's average does not.
 #   night    - a weekly window that filled all day and has been idle for six
 #              hours. Its pace is the day's; the last hour's is zero.
+#   calm, edge - a weekly and a five-hour window that project 87 and 95:
+#              silent, and firing at twice the pace.
 #
 # Mutations that turn this red:
 #   - replace sum_over_time/count_over_time with rate( or deriv( in the burn
@@ -21,7 +23,9 @@
 #     rolling starts firing (rate);
 #   - swap `and on` / `unless on` around the short-window selector, or set
 #     burn.shortWindowMaxSeconds below 18000: burst stops firing;
-#   - set burn.shortWindowMaxSeconds above 604800: night stops firing.
+#   - set burn.shortWindowMaxSeconds above 604800: night stops firing;
+#   - change the seconds per step beside a pace (* 120, * 300): at twice the
+#     pace calm or edge fire, at half night stops firing.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
@@ -72,6 +76,23 @@ tests:
         values: "604800x360"
       - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="night",account_id="1"}'
         values: "176400x360"
+      # calm: night's shape, reset in 8h - projects 69 + 2.25 x 8 = 87.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="calm",account_id="1"}'
+        values: "0+0.25x276 69x84"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="calm",account_id="1"}'
+        values: "604800x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="calm",account_id="1"}'
+        values: "133200x360"
+      # edge: a five-hour window at 20 until 27h, then a steady 18% an hour -
+      # 56 at the evaluation time, reset at 31h10m. At a steady pace the
+      # projection does not move: 20 + 18 x 4h10m = 95 from 28h on, and 131 at
+      # twice the pace - long enough before 29h for the rule's `for: 30m`.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="edge",account_id="1"}'
+        values: "20x324 21.5+1.5x35"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="edge",account_id="1"}'
+        values: "18000x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="edge",account_id="1"}'
+        values: "112200x360"
     alert_rule_test:
       - alertname: LoomwatchQuotaBurnsBeforeReset
         eval_time: 29h

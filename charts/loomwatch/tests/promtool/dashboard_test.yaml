@@ -14,6 +14,10 @@
 #     rolling reads as a breach; with deriv(): sawtooth and young lose theirs;
 #   - divide pace() by the full window instead of the covered time: young
 #     reads "won't breach";
+#   - change a step's seconds in STEP_SECONDS (the pace off by that factor):
+#     the burst or night forecast leaves its bounds;
+#   - drop `or {no_pace}` from unjudgeable(): newborn reads "won't breach" and
+#     "Not judged" loses it;
 #   - swap `and on` / `unless on` in burn_rate(), or set
 #     SHORT_WINDOW_MAX_SECONDS to -1 or 99999999: burst or night flips;
 #   - drop the comparison with the reset in breaches_before_reset(): slow
@@ -110,6 +114,15 @@ tests:
       - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="night",account_id="1"}'
         values: "176400x360"
 
+      # newborn: one sample, taken at the evaluation time - no pace yet, so
+      # "no forecast" and not judged, not "won't breach".
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="newborn",account_id="1"}'
+        values: "_x348 50"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="newborn",account_id="1"}'
+        values: "604800x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="newborn",account_id="1"}'
+        values: "248400x360"
+
       # full: at its limit, no reset published - "at limit", needs attention,
       # and not "not judged".
       - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="full",account_id="1"}'
@@ -152,8 +165,22 @@ tests:
         exp_samples:
           - labels: '{provider="zai",quota_type="young",account_id="1"}'
             value: 1
+      # The size of the pace, not only its sign. burst rises 60 points over the
+      # last hour: 60% an hour, 30 points left, 1800 s. night rose 54 points
+      # over the day: 2.25% an hour, 31 left, 49600 s. A pace off by a factor
+      # of two lands outside either band.
+      - expr: (dashboard:p1_C{quota_type="burst"} > bool 1500) * (dashboard:p1_C{quota_type="burst"} < bool 2100)
+        eval_time: 29h
+        exp_samples:
+          - labels: '{provider="zai",quota_type="burst",account_id="1"}'
+            value: 1
+      - expr: (dashboard:p1_C{quota_type="night"} > bool 45000) * (dashboard:p1_C{quota_type="night"} < bool 55000)
+        eval_time: 29h
+        exp_samples:
+          - labels: '{provider="zai",quota_type="night",account_id="1"}'
+            value: 1
       # Won't breach (3153600000), no forecast (6307200000), at limit (0).
-      - expr: dashboard:p1_C{account_id="1",quota_type=~"flat|rolling|slow|time|full"}
+      - expr: dashboard:p1_C{account_id="1",quota_type=~"flat|rolling|slow|time|full|newborn"}
         eval_time: 29h
         exp_samples:
           - labels: 'dashboard:p1_C{provider="zai",quota_type="flat",account_id="1"}'
@@ -163,6 +190,8 @@ tests:
           - labels: 'dashboard:p1_C{provider="zai",quota_type="slow",account_id="1"}'
             value: 3153600000
           - labels: 'dashboard:p1_C{provider="zai",quota_type="time",account_id="1"}'
+            value: 6307200000
+          - labels: 'dashboard:p1_C{provider="zai",quota_type="newborn",account_id="1"}'
             value: 6307200000
           - labels: 'dashboard:p1_C{provider="zai",quota_type="full",account_id="1"}'
             value: 0
@@ -194,10 +223,10 @@ tests:
         exp_samples:
           - labels: 'dashboard:p2_A'
             value: 6
-      # Not judged: the one visible row without a reset time. Not idle, not
-      # full, not the stale account.
+      # Not judged: the visible row without a reset time and the newborn one.
+      # Not idle, not full, not the stale account.
       - expr: dashboard:p3_A
         eval_time: 29h
         exp_samples:
           - labels: 'dashboard:p3_A'
-            value: 1
+            value: 2

@@ -42,6 +42,13 @@ data:
   {{- /* The hidden $stale_after constant the forecast queries compare
          collector age with: the same five intervals as the step above. */}}
   {{- $dash = replace "\"query\": \"300\"" (printf "\"query\": \"%v\"" (mul .Values.pollInterval 5)) $dash }}
+  {{- /* The forecast's trend windows, so that the table and
+         LoomwatchQuotaBurnsBeforeReset judge a quota by the same pace. Each
+         literal occurs only inside the pace expressions. */}}
+  {{- $burn := .Values.metrics.prometheusRule.burn }}
+  {{- $dash = replace "[1h:2m]" (printf "[%s:2m]" $burn.shortTrendWindow) $dash }}
+  {{- $dash = replace "[24h:5m]" (printf "[%s:5m]" $burn.trendWindow) $dash }}
+  {{- $dash = replace "<= 21600" (printf "<= %v" $burn.shortWindowMaxSeconds) $dash }}
   loomwatch.json: |
 {{ $dash | indent 4 }}
 {{- end }}

@@ -143,7 +143,10 @@ def reset_at(sel):
 SHORT_WINDOW_MAX_SECONDS = 21600
 
 
-def pace(sel, window, step, step_seconds):
+STEP_SECONDS = {"2m": 120, "5m": 300}
+
+
+def pace(sel, window, step):
     """Rises only, summed over `window` in `step`s, per second of observed time.
 
     Each step contributes how much the level went UP since the step before it,
@@ -165,7 +168,10 @@ def pace(sel, window, step, step_seconds):
     """
     before = f"max by (provider, quota_type, account_id) (loomwatch_quota_utilization_percent{{{sel}}} offset {step})"
     rise = f"clamp_min({util(sel)} - {before}, 0)"
-    return f"(sum_over_time(({rise})[{window}:{step}]) / (count_over_time(({rise})[{window}:{step}]) * {step_seconds}))"
+    # The seconds are looked up from the step rather than passed beside it: two
+    # literals for one quantity drift apart, and a pace off by a factor of five
+    # is not visible anywhere on the board.
+    return f"(sum_over_time(({rise})[{window}:{step}]) / (count_over_time(({rise})[{window}:{step}]) * {STEP_SECONDS[step]}))"
 
 
 def burn_rate(sel):
@@ -194,8 +200,8 @@ def burn_rate(sel):
     short = f"({window} <= {SHORT_WINDOW_MAX_SECONDS})"
     return f"""
       (
-        ({pace(sel, "1h", "2m", 120)} and on (provider, quota_type, account_id) {short})
-        or ({pace(sel, "24h", "5m", 300)} unless on (provider, quota_type, account_id) {short})
+        ({pace(sel, "1h", "2m")} and on (provider, quota_type, account_id) {short})
+        or ({pace(sel, "24h", "5m")} unless on (provider, quota_type, account_id) {short})
       )
     """
 
@@ -300,7 +306,8 @@ def unjudgeable(sel):
 WONT_BREACH = 3153600000
 # Sorted after WONT_BREACH, and named apart from it because they are not the
 # same statement. "No forecast" is the absence of one: the provider publishes
-# no reset time, so there is no moment to forecast to.
+# no reset time, so there is no moment to forecast to, or the series is too
+# new to have a pace yet.
 CANNOT_FORECAST = 6307200000
 # The other end of the sort. A stale account's figures are frozen, and the
 # rows that say so belong above everything else, because until the collector
@@ -367,8 +374,9 @@ def headline():
                 "Also every quota of an account whose collector has stopped "
                 "polling: its figures are frozen, and a frozen figure is neither "
                 "safe nor unsafe until somebody looks.\n\n"
-                "A quota whose provider publishes no reset time cannot be judged "
-                "and is NOT counted here. The panel beside this one says how many "
+                "A quota whose provider publishes no reset time, or whose series "
+                "is too new to have a pace yet, cannot be judged and is NOT "
+                "counted here. The panel beside this one says how many "
                 "those are, because a number that quietly excludes what it could "
                 "not measure is the kind of calm that gets people paged at night."
             ),
@@ -396,7 +404,10 @@ def headline():
             "title": "Not judged",
             "description": (
                 "Quotas the forecast cannot speak about: the provider publishes no "
-                "reset time, so there is no moment to forecast to. A quota that "
+                "reset time, so there is no moment to forecast to, or the series "
+                "appeared less than one sampling step ago and has no pace yet - "
+                "a provider that changes its set of quotas produces a burst of "
+                "those for a few minutes. A quota that "
                 "simply is not being used is judged, not counted here - the answer "
                 "for it is that it will not breach.\n\n"
                 "These are not safe and not unsafe - they are unmeasured, and they "
@@ -501,7 +512,8 @@ def triage_table():
             "A number appears only when the limit comes before the reset. "
             "Otherwise the row reads \"won't breach\" - a finding, not a gap. "
             "\"No forecast\" is the gap: the provider publishes no reset time, "
-            "so there is no moment to forecast to. \"At limit\" means the quota "
+            "so there is no moment to forecast to, or the series is too new to "
+            "have a pace yet. \"At limit\" means the quota "
             "is already out. \"Stale data\" means the collector has stopped "
             "polling this account, the figures on the row are the last ones it "
             "got, and the reset times are \"unknown\" rather than a date that "

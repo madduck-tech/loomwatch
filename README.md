@@ -90,7 +90,8 @@ the current reading instead.
 
 The forecast column prints a duration only when the limit comes before the
 reset. Otherwise it says `won't breach` - a finding. `no forecast` is the
-absence of one: the provider publishes no reset time. `at limit` is a quota
+absence of one: the provider publishes no reset time, or the series is too
+new to have a pace yet. `at limit` is a quota
 that is already out, and `stale data` is an account whose collector has
 stopped polling, so its figures are the last ones it got.
 
