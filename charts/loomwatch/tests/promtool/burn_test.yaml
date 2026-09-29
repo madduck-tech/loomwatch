@@ -1,0 +1,50 @@
+# LoomwatchQuotaBurnsBeforeReset against a quota the provider keeps giving back.
+#
+# MiniMax lowers its counters in the middle of a window a few times a day. The
+# level then draws a sawtooth: it climbs fast, falls, climbs again. A line
+# fitted through that (deriv) describes the falls rather than the consumption
+# and comes out flat or negative, so the rule stayed silent for a quota filling
+# at 12% an hour. rate() adds up the rises only.
+#
+# Mutation that turns this red: replace rate( with deriv( in the burn rule of
+# templates/prometheusrule.yaml - the first alert below stops firing.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 5m
+    input_series:
+      - series: 'loomwatch_agent_healthy{provider="zai",account_id="1"}'
+        values: "1x360"
+      # Five teeth of six hours each: 0 to 71 in 5-minute steps, then back to 0.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="tokens",account_id="1"}'
+        values: "0+1x71 0+1x71 0+1x71 0+1x71 0+1x71"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="tokens",account_id="1"}'
+        values: "604800x360"
+      # Resets at 69h, so 40h remain at the evaluation time below - inside the
+      # 48h horizon gate.
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="tokens",account_id="1"}'
+        values: "248400x360"
+      # The control: same account, same reset, level flat at 50. A rule that
+      # fires for everything would fire here too.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="flat",account_id="1"}'
+        values: "50x360"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="flat",account_id="1"}'
+        values: "604800x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="flat",account_id="1"}'
+        values: "248400x360"
+    alert_rule_test:
+      - alertname: LoomwatchQuotaBurnsBeforeReset
+        eval_time: 29h
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              subsystem: llm-quota
+              provider: zai
+              quota_type: tokens
+              account_id: "1"
+              team: platform
+            exp_annotations:
+              runbook_url: https://github.com/madduck-tech/loomwatch/blob/main/docs/runbooks/README.md#loomwatchquotaburnsbeforereset
+              summary: Quota tokens of zai (account 1) is on track to run out before it resets
+              description: "This is high consumption in the only measurable sense: not an absolute number of tokens, but the rate relative to the plan's own quota, projected to the moment that quota resets."

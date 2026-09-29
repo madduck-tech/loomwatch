@@ -3,6 +3,22 @@
 {{- $by := "max by (provider, quota_type, account_id)" }}
 {{- $rb := .Values.metrics.prometheusRule.runbookUrlBase }}
 {{- $remaining := printf "%s (loomwatch_quota_reset_timestamp_seconds{%s} - time())" $by $sel }}
+{{- $burn := .Values.metrics.prometheusRule.burn }}
+{{- $level := printf "round(%s (loomwatch_quota_utilization_percent{%s}), 0.01)" $by $sel }}
+{{- $short := printf "(%s (loomwatch_quota_window_seconds{%s}) <= %v)" $by $sel $burn.shortWindowMaxSeconds }}
+{{/*
+  Consumption in percent per second, the same estimator the dashboard uses.
+
+  rate() rather than deriv(): the quota gauge falls whenever the provider gives
+  quota back - at the end of a window, and MiniMax also a few times a day in the
+  middle of one - and deriv() fits a line through that sawtooth. rate() reads a
+  fall as a counter reset and adds up the rises only. Rounding first keeps float
+  noise (7 vs 7.000000000000001) from counting as a reset.
+
+  Short windows are measured over shortTrendWindow, because a day's average
+  dilutes the working hours with the night; longer ones over trendWindow.
+*/}}
+{{- $rate := printf "((rate((%s)[%s:1m]) and on (provider, quota_type, account_id) %s) or (rate((%s)[%s:5m]) unless on (provider, quota_type, account_id) %s))" $level $burn.shortTrendWindow $short $level $burn.trendWindow $short }}
 {{/*
   The team join, or nothing at all when no team is configured.
 
@@ -165,7 +181,7 @@ spec:
             (
             (
             {{ $by }} (loomwatch_quota_utilization_percent{ {{- $sel -}} })
-            + {{ $by }} (deriv(loomwatch_quota_utilization_percent{ {{- $sel -}} }[{{ .Values.metrics.prometheusRule.burn.trendWindow }}]))
+            + {{ $rate }}
             * {{ $remaining }}
             ) > 100
             )

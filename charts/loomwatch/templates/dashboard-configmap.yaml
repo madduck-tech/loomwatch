@@ -39,6 +39,9 @@ data:
   {{- $dash = replace "\"value\": 80" (printf "\"value\": %v" .Values.metrics.prometheusRule.highThreshold) $dash }}
   {{- $dash = replace "\"value\": 95" (printf "\"value\": %v" .Values.metrics.prometheusRule.criticalThreshold) $dash }}
   {{- $dash = replace "\"value\": 300" (printf "\"value\": %v" (mul .Values.pollInterval 5)) $dash }}
+  {{- /* The hidden $stale_after constant the forecast queries compare
+         collector age with: the same five intervals as the step above. */}}
+  {{- $dash = replace "\"query\": \"300\"" (printf "\"query\": \"%v\"" (mul .Values.pollInterval 5)) $dash }}
   loomwatch.json: |
 {{ $dash | indent 4 }}
 {{- end }}

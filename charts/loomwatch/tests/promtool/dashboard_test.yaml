@@ -1,0 +1,110 @@
+# The dashboard's own queries, as the chart renders them, against fixture series.
+#
+# check-chart-rules.sh writes every panel query to dashboard-rules.yaml as a
+# recording rule named after its panel and refId: p2_A is "Needs attention",
+# p3_A is "Not judged", p1_B and p1_C are the "Resets in" and "Breaches in"
+# columns of the table. $stale_after arrives as the chart renders it (five
+# times the default pollInterval of 120, so 600).
+#
+# The four rows below are the four states the forecast column distinguishes.
+#
+# Mutations that turn this red:
+#   - replace rate( with deriv( in burn_rate() of scripts/make-dashboard.py:
+#     the sawtooth row loses its forecast and reads "won't breach";
+#   - drop fresh() from breaching() or stale_rows() from needs_attention():
+#     the stale account stops counting, or reads as a forecast;
+#   - drop the `> 0` in unjudgeable(): "Not judged" counts the idle row the
+#     table does not show.
+rule_files:
+  - dashboard-rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 5m
+    input_series:
+      # Account 1 polls fine.
+      - series: 'loomwatch_agent_healthy{provider="zai",account_id="1"}'
+        values: "1x360"
+      - series: 'loomwatch_agent_last_cycle_age_seconds{provider="zai",account_id="1"}'
+        values: "20x360"
+      # A weekly window the provider keeps giving back: five six-hour teeth,
+      # 0 to 71. Consumption runs at about 12% an hour; the reset is 40h away
+      # at the evaluation time, so it breaches in about three and a half hours.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="tokens",account_id="1"}'
+        values: "0+1x71 0+1x71 0+1x71 0+1x71 0+1x71"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="tokens",account_id="1"}'
+        values: "604800x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="tokens",account_id="1"}'
+        values: "248400x360"
+      # Flat at 50 with a reset: judged, and the answer is "won't breach".
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="flat",account_id="1"}'
+        values: "50x360"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="flat",account_id="1"}'
+        values: "604800x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="flat",account_id="1"}'
+        values: "248400x360"
+      # In use, no reset published: "no forecast", and counted as not judged.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="time",account_id="1"}'
+        values: "10x360"
+      # Idle, no reset published: the table leaves it out, so nothing may
+      # count it.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="idle",account_id="1"}'
+        values: "0x360"
+      # Account 2's collector has not completed a poll for eleven days. Its
+      # last reading and its reset time are frozen, the reset long past.
+      - series: 'loomwatch_agent_healthy{provider="zai",account_id="2"}'
+        values: "0x360"
+      - series: 'loomwatch_agent_last_cycle_age_seconds{provider="zai",account_id="2"}'
+        values: "1000000x360"
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="tokens",account_id="2"}'
+        values: "11x360"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="tokens",account_id="2"}'
+        values: "604800x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="tokens",account_id="2"}'
+        values: "3600x360"
+    promql_expr_test:
+      # The sawtooth breaches before its reset, and the forecast says so with a
+      # real duration rather than a sentinel.
+      - expr: (dashboard:p1_C{quota_type="tokens",account_id="1"} > bool 0) * (dashboard:p1_C{quota_type="tokens",account_id="1"} < bool 144000)
+        eval_time: 29h
+        exp_samples:
+          - labels: '{provider="zai",quota_type="tokens",account_id="1"}'
+            value: 1
+      - expr: dashboard:p1_C{quota_type="flat"}
+        eval_time: 29h
+        exp_samples:
+          - labels: 'dashboard:p1_C{provider="zai",quota_type="flat",account_id="1"}'
+            value: 3153600000
+      - expr: dashboard:p1_C{quota_type="time"}
+        eval_time: 29h
+        exp_samples:
+          - labels: 'dashboard:p1_C{provider="zai",quota_type="time",account_id="1"}'
+            value: 6307200000
+      # The stale account: "stale data" in the forecast, "unknown" for the
+      # reset instead of a date eleven days gone.
+      - expr: dashboard:p1_C{account_id="2"}
+        eval_time: 29h
+        exp_samples:
+          - labels: 'dashboard:p1_C{provider="zai",quota_type="tokens",account_id="2"}'
+            value: -1
+      - expr: dashboard:p1_B{account_id="2"}
+        eval_time: 29h
+        exp_samples:
+          - labels: 'dashboard:p1_B{provider="zai",quota_type="tokens",account_id="2"}'
+            value: -1
+      # The idle row without a reset is not on the table.
+      - expr: dashboard:p1_C{quota_type="idle"}
+        eval_time: 29h
+        exp_samples: []
+      # Needs attention: the breaching sawtooth and the stale account's row.
+      - expr: dashboard:p2_A
+        eval_time: 29h
+        exp_samples:
+          - labels: 'dashboard:p2_A'
+            value: 2
+      # Not judged: the one visible row without a reset time. Not the idle
+      # row, and not the stale account.
+      - expr: dashboard:p3_A
+        eval_time: 29h
+        exp_samples:
+          - labels: 'dashboard:p3_A'
+            value: 1

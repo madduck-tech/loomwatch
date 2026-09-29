@@ -47,7 +47,10 @@ helm template rules-check "$CHART_DIR" --set dashboard.enabled=true \
   -s templates/dashboard-configmap.yaml \
   | python3 -c 'import sys,yaml,json; d=yaml.safe_load(sys.stdin); print(list(d["data"].values())[0])' \
   > "$work/dashboard.json"
-python3 scripts/check-dashboard-queries.py "$work/dashboard.json" "$PROMTOOL"
+# The parsed queries are kept as recording rules, so that
+# tests/promtool/dashboard_test.yaml can run the dashboard's own queries - as
+# the chart renders them - through the same engine as the alerts.
+python3 scripts/check-dashboard-queries.py "$work/dashboard.json" "$PROMTOOL" "$work/dashboard-rules.yaml"
 
 echo "--- runbook anchors resolve"
 python3 scripts/check-runbook-links.py "$work/rendered.yaml" docs/runbooks/README.md

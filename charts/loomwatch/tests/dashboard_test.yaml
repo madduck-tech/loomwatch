@@ -44,6 +44,22 @@ tests:
           path: data["loomwatch.json"]
           pattern: '"value": 600'
 
+  # The forecast queries drop stale accounts by comparing collector age with
+  # the hidden $stale_after constant. It has to move with pollInterval like the
+  # panel step does, or the table calls an account stale at a different age
+  # from the freshness bar beside it.
+  - it: calls an account stale at the same age in the queries as on the panel
+    set:
+      dashboard.enabled: true
+      pollInterval: 120
+    asserts:
+      - matchRegex:
+          path: data["loomwatch.json"]
+          pattern: '"name": "stale_after",[^}]*"query": "600"'
+      - notMatchRegex:
+          path: data["loomwatch.json"]
+          pattern: '"query": "300"'
+
   - it: leaves Grafana legend syntax alone
     set:
       dashboard.enabled: true

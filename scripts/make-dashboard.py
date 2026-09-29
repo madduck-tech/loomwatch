@@ -138,56 +138,84 @@ def reset_at(sel):
     return f"max by (provider, quota_type, account_id) (loomwatch_quota_reset_timestamp_seconds{{{sel}}})"
 
 
-def crossed_reset(sel):
-    """Whether the trend window contains a reset, by counting drops.
+# Windows this short or shorter are forecast from the last hour, longer ones
+# from the last day. See burn_rate().
+SHORT_WINDOW_MAX_SECONDS = 21600
 
-    The previous test was `deriv < 0`, on the assumption that a window holding
-    a reset yields a negative slope. That is false whenever the level rose
-    enough around the drop to outweigh it. Measured on the stand: MiniMax's
-    five-hour `general` window reset three times inside the 24h trend window and
-    still produced +1.05 %/hour, because the day began near zero and ended near
-    fifty. The forecast built on it read "breaches in 3 days" for a window that
-    resets every five hours - a horizon fourteen times longer than the thing
-    being forecast, and one that can never arrive.
 
-    resets() counts the drops directly. It is documented for counters, and a
-    quota gauge that only rises until its window resets is exactly that shape.
-    On the same data it caught six series where the sign test caught four; the
-    two it added were the ones printing the impossible forecast.
+def burn_rate(sel):
+    """Consumption in percent per second: how fast the quota fills, drops aside.
+
+    rate(), not deriv(). A quota gauge rises while it is consumed and falls only
+    when the provider gives quota back - at the end of its window, and, as it
+    turned out, at other times too. rate() reads every fall as a counter reset
+    and adds up the rises only, so the number is the speed of consumption
+    whatever the provider did in between. The headroom is taken from the
+    current reading, so a fall shows up there, at the moment it happens.
+
+    Both earlier estimators failed on the falls. deriv() over 24h fitted one
+    line through the sawtooth and printed -837%, then, clamped at zero, a calm
+    1% for a quota that had spent its previous window at 100%. The repair after
+    that refused to forecast whenever the day held a fall. That read "no
+    forecast" on every five-hour window, which was expected, and on every
+    MiniMax weekly window, which was not: MiniMax lowers both of its counters
+    mid-window a few times a day, so the weekly windows - the ones the forecast
+    is for - were never judged. At the time they were filling at about 20% a
+    day against seven days of window, and the board said nothing.
+
+    The window is picked by the quota's own length. A five-hour window is
+    decided by the pace of the last hour; a day's average dilutes the working
+    hours with the night. A weekly window is decided by the pace of the last
+    day. A quota whose provider declares no window is treated as long.
+
+    Rounding before rate() is a guard against float noise. The collector
+    derives percentages by division, and the same reading can come back as 7
+    and 7.000000000000001; a fall of 1e-15 would count as a reset and add the
+    whole level to the rate.
+
+    Mutation that turns charts/loomwatch/tests/promtool/dashboard_test.yaml
+    red: replace rate( with deriv( here - the sawtooth row loses its forecast.
     """
-    return f"resets(({util(sel)})[24h:5m]) > 0"
-
-
-def slope(sel):
-    """Consumption rate in percent per second, or nothing at all.
-
-    `> 0` is not a tidy-up, it is the whole point. Consumption inside a window
-    never falls; the only thing that lowers utilisation is the window resetting,
-    which drops it off a cliff. deriv over 24h reads that cliff as a trend, and
-    a forecast built on it is an artefact of the boundary rather than a
-    statement about consumption.
-
-    This was found the expensive way. The column first extrapolated the cliff
-    and printed -837%, which was absurd enough that the operator asked about it
-    within a day. The repair clamped the slope at zero, and the same row then
-    read a calm green 1% - on a quota that had spent every observed hour of its
-    previous window at 100%. Clamping turned a loud wrong answer into a quiet
-    one, which is worse.
-
-    So a slope that cannot be trusted produces no series, the forecast that
-    depends on it produces no value, and the cell is empty. An empty cell is the
-    only honest rendering of "the estimator lost its footing inside the
-    averaging window".
-
-    The window is fixed at 24h to match burn.trendWindow in the alert. It used
-    to be $__range, which made the column a function of the time picker: the
-    same quota at the same moment read 2% on a six-hour view and 38% on a day's,
-    with nothing on screen to say the number had moved.
+    window = f"max by (provider, quota_type, account_id) (loomwatch_quota_window_seconds{{{sel}}})"
+    short = f"({window} <= {SHORT_WINDOW_MAX_SECONDS})"
+    level = f"round({util(sel)}, 0.01)"
+    return f"""
+      (
+        ((rate(({level})[1h:2m])) and on (provider, quota_type, account_id) {short})
+        or ((rate(({level})[24h:5m])) unless on (provider, quota_type, account_id) {short})
+      )
     """
-    return (
-        f"(deriv(({util(sel)})[24h:5m]) > 0)"
-        f" unless on (provider, quota_type, account_id) ({crossed_reset(sel)})"
-    )
+
+
+# The value the file carries, equal to the freshness panel's red step. The chart
+# replaces both with five of its pollInterval; a dashboard imported from the
+# catalogue keeps this one.
+STALE_AFTER_DEFAULT = 300
+
+# Accounts whose collector has not completed a poll for longer than the stale
+# threshold. $stale_after is a hidden constant the chart rewrites from
+# pollInterval, the same five poll intervals the freshness panel and the
+# collector alert use.
+STALE_ACCOUNTS = (
+    'max by (provider, account_id) '
+    '(loomwatch_agent_last_cycle_age_seconds{provider=~"$provider"}) > $stale_after'
+)
+
+
+def fresh(expr):
+    """Only the rows whose collector is still polling.
+
+    A stale account's readings are frozen, so its rate is zero and every
+    judgement built on it says "will not breach". A dead key of a subscription
+    that nobody renewed read that way for twelve days, as the calmest row on
+    the board.
+    """
+    return f"(({expr}) unless on (provider, account_id) ({STALE_ACCOUNTS}))"
+
+
+def stale_rows(sel):
+    """Visible rows of accounts whose numbers can no longer be believed."""
+    return f"(({visible_rows(sel)}) and on (provider, account_id) ({STALE_ACCOUNTS}))"
 
 
 def time_to_breach(sel):
@@ -198,27 +226,37 @@ def time_to_breach(sel):
     limit printed the same number, and a quota already at 100 printed 100
     whatever it was doing. What the operator has to compare is this against the
     time left before the window resets - two durations, one decision.
+
+    A quota that is not being consumed has no series here: dividing by a zero
+    rate is not a forecast.
     """
-    return f"clamp_min((100 - ({util(sel)})) / ({slope(sel)}), 0)"
+    return f"(clamp_min(100 - ({util(sel)}), 0) / (({burn_rate(sel)}) > 0))"
+
+
+def breaches_before_reset(sel):
+    """The forecast, kept only where it lands before the window resets.
+
+    A forecast past the reset is not a finding about this window. It used to be
+    printed anyway, in green: "5 weeks" beside a weekly window that reset in
+    four days, which reads like a comfortable margin rather than "this window
+    will not run out".
+    """
+    return f"(({time_to_breach(sel)}) < (({reset_at(sel)}) - time()))"
 
 
 def unjudgeable(sel):
-    """Quotas the forecast has nothing to say about.
+    """Quotas the forecast has nothing to say about: no reset time published.
 
-    Two cases only, and neither is "the quota is not moving". A flat quota with
-    a known reset IS judged: the answer is that it will not breach, and that is
-    a result rather than a gap. Counting idleness as ignorance made this panel
-    read 13 of 16 on a board where twelve quotas were simply not being used.
+    A flat quota with a known reset IS judged: the answer is that it will not
+    breach. A quota whose window fell inside the averaging period is judged too
+    - burn_rate() reads through the fall. What is left is a provider that
+    publishes no reset time, so there is no moment to forecast to.
 
-    What genuinely cannot be judged: a provider that publishes no reset time, so
-    there is no moment to forecast to; and a trend whose averaging window
-    contains a reset, so the slope describes the boundary rather than the
-    consumption.
+    Restricted to the rows the table shows. The count used to include rows the
+    table filters out - zero, and no reset time - so it read 12 beside a table
+    with ten of them.
     """
-    return in_team(f"""
-        ({util(sel)} unless on (provider, quota_type, account_id) {reset_at(sel)})
-        or ({util(sel)} and on (provider, quota_type, account_id) ({crossed_reset(sel)}))
-    """)
+    return in_team(fresh(f"({util(sel)} > 0) unless on (provider, quota_type, account_id) {reset_at(sel)}"))
 
 
 # The value a row carries when there is no forecast for it.
@@ -231,34 +269,51 @@ def unjudgeable(sel):
 # the operator sees no difference and the order is the one the title promises.
 #
 # Chosen far beyond any real horizon: a hundred years in seconds. Any genuine
-# forecast is smaller, so the sentinel always sorts last.
-NOT_ON_TRACK = 3153600000
-# Sorted after NOT_ON_TRACK, and named apart from it because they are not the
-# same statement. "Not on track" is a finding: consumption is flat or falling,
-# so the quota will not reach its limit. "Cannot forecast" is the absence of
-# one: a reset inside the trend window means the slope describes the boundary
-# rather than the consumption, and saying "not on track" there would be a claim
-# the data does not support.
+# forecast is smaller, so the sentinel always sorts after the forecasts.
+#
+# "Won't breach" is a finding: at the current pace the quota does not reach its
+# limit before the window resets. It used to read "not on track", which an
+# operator takes to mean the opposite - off track, something wrong.
+WONT_BREACH = 3153600000
+# Sorted after WONT_BREACH, and named apart from it because they are not the
+# same statement. "No forecast" is the absence of one: the provider publishes
+# no reset time, so there is no moment to forecast to.
 CANNOT_FORECAST = 6307200000
+# The other end of the sort. A stale account's figures are frozen, and the
+# rows that say so belong above everything else, because until the collector
+# polls again nothing below them can be believed either.
+STALE = -1
+# Already out. Not a forecast but the state a forecast warns about, and it
+# sorts right after the stale rows.
+AT_LIMIT = 0
 
 
 def breaching(sel):
     """The quotas that are out, or reach their limit before their window resets.
 
     The comparison the whole board exists to make, written once. The first term
-    is not redundant: a quota sitting AT its limit has a slope of zero, so the
+    is not redundant: a quota sitting AT its limit may not be moving, so the
     forecast says nothing about it, and it would fall out of the very count that
     exists to notice exactly that. Being out of quota is the most urgent state
     there is, not an unmeasured one.
 
-    Rows with no reset time and rows with no trustworthy slope are absent rather
-    than counted as safe - which is why the panel beside this one says how many
-    could not be judged.
+    Stale accounts are excluded here and counted by needs_attention() instead:
+    a frozen reading neither breaches nor stays safe.
     """
-    return in_team(f"""
+    return in_team(fresh(f"""
         ({util(sel)} >= 100)
-        or (({time_to_breach(sel)}) < (({reset_at(sel)}) - time()))
-    """)
+        or {breaches_before_reset(sel)}
+    """))
+
+
+def needs_attention(sel):
+    """What the operator has to act on: breaching quotas and blind accounts.
+
+    A stale account is in here on purpose. Its quota rows are the ones nobody
+    can vouch for, and a headline that reads 0 while a subscription has not
+    been polled for twelve days is the exact calm this panel exists to prevent.
+    """
+    return f"(({breaching(sel)}) or {stale_rows(sel)})"
 
 
 def headline():
@@ -284,16 +339,19 @@ def headline():
             "title": "Needs attention",
             "description": (
                 "Quotas already at their limit, or reaching it before their window "
-                "resets at the rate of the last 24 hours.\n\n"
-                "A quota with no reset time, or whose trend crossed a reset and is "
-                "therefore not a trend, cannot be judged and is NOT counted here. "
-                "The panel beside this one says how many those are, because a "
-                "number that quietly excludes what it could not measure is the "
-                "kind of calm that gets people paged at night."
+                "resets at the current pace - the last hour for windows of six "
+                "hours or less, the last day for longer ones.\n\n"
+                "Also every quota of an account whose collector has stopped "
+                "polling: its figures are frozen, and a frozen figure is neither "
+                "safe nor unsafe until somebody looks.\n\n"
+                "A quota whose provider publishes no reset time cannot be judged "
+                "and is NOT counted here. The panel beside this one says how many "
+                "those are, because a number that quietly excludes what it could "
+                "not measure is the kind of calm that gets people paged at night."
             ),
             "datasource": DS,
             "gridPos": {"h": 5, "w": 5, "x": 0, "y": 0},
-            "targets": [target("A", f"count({breaching(SEL)}) or vector(0)", instant=True)],
+            "targets": [target("A", f"count({needs_attention(SEL)}) or vector(0)", instant=True)],
             "fieldConfig": {
                 "defaults": {
                     "unit": "short", "decimals": 0,
@@ -314,10 +372,10 @@ def headline():
             "type": "stat",
             "title": "Not judged",
             "description": (
-                "Quotas the forecast cannot speak about: no reset time published, "
-                "or a trend that crossed a reset inside the averaging window. A "
-                "quota that simply is not being used is judged, not counted here - "
-                "the answer for it is that it will not breach.\n\n"
+                "Quotas the forecast cannot speak about: the provider publishes no "
+                "reset time, so there is no moment to forecast to. A quota that "
+                "simply is not being used is judged, not counted here - the answer "
+                "for it is that it will not breach.\n\n"
                 "These are not safe and not unsafe - they are unmeasured, and they "
                 "are shown so that the count beside them cannot be mistaken for a "
                 "statement about every quota on the board."
@@ -354,8 +412,11 @@ def headline():
             ),
             "datasource": DS,
             "gridPos": {"h": 5, "w": 14, "x": 10, "y": 0},
+            # By provider too, not only by account: the accounts a collector
+            # seeds on its own are all called "default", and a bar reading
+            # "default" twice cannot say which of the two has gone stale.
             "targets": [target("A", """
-                max by (account_id, account_name) (
+                max by (provider, account_id, account_name) (
                   loomwatch_agent_last_cycle_age_seconds{provider=~"$provider"}
                   * on (provider, account_id) group_left(account_name) (
                       max by (provider, account_id, account_name) (
@@ -366,7 +427,7 @@ def headline():
                       )
                     )
                 )
-            """, legend="{{account_name}}")],
+            """, legend="{{provider}} / {{account_name}}")],
             "fieldConfig": {
                 "defaults": {
                     "unit": "s", "decimals": 0, "min": 0,
@@ -404,18 +465,20 @@ def triage_table():
             "Utilisation is a share of each plan's own limit, so 100 is the quota "
             "itself - and for the same reason two rows at 100% are not comparable "
             "quantities and none of these numbers can be summed.\n\n"
-            "A forecast needs a trend, and a trend needs a stretch of "
-            "consumption with no reset in it. The trend window is 24 hours, to "
-            "match the burn alert, so a quota whose own window is shorter than "
-            "that almost always contains one - and those rows read \"no "
-            "forecast\" rather than a number derived from a boundary. It is not "
-            "much of a loss: a five-hour window cannot do a great deal of damage "
-            "before it resets, and \"Resets in\" is the operative number there. "
-            "The forecast earns its place on the weekly windows, which are the "
-            "ones that quietly run out.\n\n"
-            "\"Not on track\" and \"no forecast\" are different statements. The "
-            "first is a finding - consumption is flat or falling, the quota will "
-            "not reach its limit. The second is the absence of one.\n\n"
+            "The forecast is the time until the quota reaches its limit at the "
+            "current pace of consumption: the last hour for windows of six hours "
+            "or less, the last day for longer ones. The pace counts only what "
+            "was consumed, so a window that reset or a provider that gave quota "
+            "back does not bend it; what was given back shows up in the current "
+            "reading instead.\n\n"
+            "A number appears only when the limit comes before the reset. "
+            "Otherwise the row reads \"won't breach\" - a finding, not a gap. "
+            "\"No forecast\" is the gap: the provider publishes no reset time, "
+            "so there is no moment to forecast to. \"At limit\" means the quota "
+            "is already out. \"Stale data\" means the collector has stopped "
+            "polling this account, the figures on the row are the last ones it "
+            "got, and the reset times are \"unknown\" rather than a date that "
+            "has already passed.\n\n"
             "Window is what the provider says the window is, not what this board "
             "worked out. It used to be derived from the longest time-to-reset "
             "seen over a week, which on a young deployment reported a confident "
@@ -431,11 +494,22 @@ def triage_table():
             # zero whose provider publishes no reset is not evidence of health -
             # it is an absence of evidence, and it filled half this table.
             target("A", with_account_name(visible_rows(SEL)), instant=True),
-            target("B", only_visible(f"({reset_at(SEL)}) - time()", SEL), instant=True),
+            # A stale account's reset time is the one it had when the collector
+            # last got through, and for a dead key that is weeks in the past:
+            # the column read "-2 weeks". The sentinel renders as "unknown".
+            target("B", only_visible(f"""
+                ({fresh(f"({reset_at(SEL)}) - time()")})
+                or ((({stale_rows(SEL)}) and on (provider, quota_type, account_id) {reset_at(SEL)}) * 0 + {STALE})
+            """, SEL), instant=True),
+            # Each branch in parentheses, first match wins: `or` keeps the left
+            # operand's series and adds the right one's only for label sets the
+            # left does not have, so the order below is the order of precedence.
             target("C", only_visible(f"""
-                ({time_to_breach(SEL)})
+                (({stale_rows(SEL)}) * 0 + {STALE})
+                or (({fresh(f"{util(SEL)} >= 100")}) * 0 + {AT_LIMIT})
+                or ({fresh(breaches_before_reset(SEL))})
                 or (({unjudgeable(SEL)}) * 0 + {CANNOT_FORECAST})
-                or (({visible_rows(SEL)}) * 0 + {NOT_ON_TRACK})
+                or (({visible_rows(SEL)}) * 0 + {WONT_BREACH})
             """, SEL), instant=True),
             # Ownership, where the chart publishes it - and only when it
             # DISTINGUISHES. One team across every row is a column of identical
@@ -461,7 +535,10 @@ def triage_table():
             # metric is in seconds, and rendered as-is every reset landed on
             # 21 January 1970 - a Unix timestamp interpreted as an offset a
             # thousand times smaller.
-            target("G", only_visible(f"({reset_at(SEL)} > 0) * 1000", SEL), instant=True),
+            target("G", only_visible(f"""
+                ({fresh(f"({reset_at(SEL)} > 0) * 1000")})
+                or ((({stale_rows(SEL)}) and on (provider, quota_type, account_id) {reset_at(SEL)}) * 0 + {STALE})
+            """, SEL), instant=True),
         ],
         "transformations": [
             {"id": "merge", "options": {}},
@@ -507,26 +584,38 @@ def triage_table():
                      # mapping rather than noValue: the value is present so
                      # that it sorts, and only its appearance is an absence.
                      {"id": "mappings", "value": [{"type": "value", "options": {
-                         str(NOT_ON_TRACK): {"text": "not on track", "color": "text", "index": 0},
-                         str(CANNOT_FORECAST): {"text": "no forecast", "color": "text", "index": 1}}}]},
-                     {"id": "noValue", "value": "not on track"},
+                         str(STALE): {"text": "stale data", "color": "red", "index": 0},
+                         str(AT_LIMIT): {"text": "at limit", "color": "red", "index": 1},
+                         str(WONT_BREACH): {"text": "won't breach", "color": "text", "index": 2},
+                         str(CANNOT_FORECAST): {"text": "no forecast", "color": "text", "index": 3}}}]},
+                     {"id": "noValue", "value": "-"},
                      # The base step is neutral and the colours start at zero.
                      # Grafana paints an ABSENT value with the base colour, and
-                     # with red at the base every row that was not on track to
+                     # with red at the base every row that was not going to
                      # breach - the safe majority - was rendered in alarm red.
+                     #
+                     # No green step. Every number left in this column is a
+                     # breach that lands before its reset; the only question is
+                     # how soon. Green used to mark forecasts beyond a day, and
+                     # painted "5 weeks" for a window that reset in four days as
+                     # the healthy state.
                      {"id": "thresholds", "value": {"mode": "absolute", "steps": [
                          {"color": "text", "value": None}, {"color": "red", "value": 0},
-                         {"color": "orange", "value": 21600}, {"color": "green", "value": 86400}]}},
+                         {"color": "orange", "value": 86400}]}},
                  ]},
                 {"matcher": {"id": "byName", "options": "Resets in"},
                  "properties": [
                      {"id": "unit", "value": "s"}, {"id": "decimals", "value": 0},
                      {"id": "custom.width", "value": 110},
+                     {"id": "mappings", "value": [{"type": "value", "options": {
+                         str(STALE): {"text": "unknown", "index": 0}}}]},
                      {"id": "noValue", "value": "not published"},
                  ]},
                 {"matcher": {"id": "byName", "options": "Resets at"},
                  "properties": [
                      {"id": "unit", "value": "dateTimeAsLocal"},
+                     {"id": "mappings", "value": [{"type": "value", "options": {
+                         str(STALE): {"text": "unknown", "index": 0}}}]},
                      # Wide enough for the longest thing the formatter produces:
                      # a two-digit month, a four-digit year and a 12-hour clock
                      # with a meridiem. At 160 the leading digit of the month was
@@ -553,9 +642,9 @@ def triage_table():
             # chain, which is before the rename, and a name it cannot find is
             # not an error - it is a table that quietly comes back unsorted.
             #
-            # Ascending, and on the forecast: the row with the least time left
-            # is the one to act on. Rows with no forecast have no value here and
-            # Grafana puts them last, which is where an unjudged row belongs.
+            # Ascending, and on the forecast: stale accounts first, then quotas
+            # already out, then the row with the least time left. The sentinels
+            # for "won't breach" and "no forecast" sort after every real number.
             "sortBy": [{"displayName": "Breaches in", "desc": False}],
         },
     }
@@ -664,6 +753,12 @@ def variables():
     return [
         {"name": "datasource", "label": "Data source", "type": "datasource",
          "query": "prometheus", "current": {}},
+        # Seconds without a completed poll after which an account counts as
+        # stale. Hidden: it is configuration, not a filter. The chart rewrites
+        # the value from pollInterval - five intervals, the same age at which
+        # the freshness panel turns red and LoomwatchCollectorNotPolling fires.
+        {"name": "stale_after", "label": "Stale after (s)", "type": "constant",
+         "hide": 2, "query": str(STALE_AFTER_DEFAULT)},
         query("provider", "Provider", "label_values(loomwatch_agent_healthy, provider)",
               "Filters the table above and which accounts get a block below."),
         # Ownership. Present whether or not anyone configured it: with no
