@@ -51,22 +51,26 @@ tests:
           pattern: "predict_linear"
       - matchRegex:
           path: spec.groups[0].rules[2].expr
-          pattern: "rate\\("
+          pattern: "sum_over_time\\("
 
   # deriv() fits a line through the sawtooth a provider draws when it gives
-  # quota back mid-window, and the line describes the falls rather than the
-  # consumption. burn_test.yaml proves the consequence against a real engine;
-  # this pins the text so the regression is visible in review as well.
-  - it: measures the pace with rate over the rises, not deriv over the level
+  # quota back mid-window, and rate() reads each fall as a reset to zero and
+  # adds the whole level after it. burn_test.yaml proves the consequences
+  # against a real engine; this pins the text so a regression is visible in
+  # review as well.
+  - it: measures the pace as summed rises, not deriv or rate over the level
     set:
       metrics.prometheusRule.enabled: true
     asserts:
       - notMatchRegex:
           path: spec.groups[0].rules[2].expr
           pattern: "deriv\\("
+      - notMatchRegex:
+          path: spec.groups[0].rules[2].expr
+          pattern: "(^|[^_])rate\\("
       - matchRegex:
           path: spec.groups[0].rules[2].expr
-          pattern: "\\[1h:1m\\]"
+          pattern: "\\[1h:2m\\]"
       - matchRegex:
           path: spec.groups[0].rules[2].expr
           pattern: "\\[24h:5m\\]"

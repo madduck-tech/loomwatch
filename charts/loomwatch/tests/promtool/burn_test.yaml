@@ -1,13 +1,27 @@
-# LoomwatchQuotaBurnsBeforeReset against a quota the provider keeps giving back.
+# LoomwatchQuotaBurnsBeforeReset against quota that comes back mid-window.
 #
-# MiniMax lowers its counters in the middle of a window a few times a day. The
-# level then draws a sawtooth: it climbs fast, falls, climbs again. A line
-# fitted through that (deriv) describes the falls rather than the consumption
-# and comes out flat or negative, so the rule stayed silent for a quota filling
-# at 12% an hour. rate() adds up the rises only.
+# The pace is the sum of the level's rises between steps per second of
+# observed time. Three shapes decide whether that is what the rule computes:
 #
-# Mutation that turns this red: replace rate( with deriv( in the burn rule of
-# templates/prometheusrule.yaml - the first alert below stops firing.
+#   sawtooth - MiniMax lowers its counters in the middle of a window a few
+#              times a day. deriv() fits a line through the teeth and comes out
+#              flat or negative, so the rule stayed silent for a quota filling
+#              at 12% an hour.
+#   rolling  - a rolling window drifts down as old use ages out. rate() reads
+#              every small fall as a reset to zero and adds the whole level, so
+#              a quota nobody was using projected a breach within minutes.
+#   burst    - a five-hour window idle all day and busy for the last hour. Only
+#              the one-hour pace sees it; a day's average does not.
+#   night    - a weekly window that filled all day and has been idle for six
+#              hours. Its pace is the day's; the last hour's is zero.
+#
+# Mutations that turn this red:
+#   - replace sum_over_time/count_over_time with rate( or deriv( in the burn
+#     rule of templates/prometheusrule.yaml: sawtooth stops firing (deriv) or
+#     rolling starts firing (rate);
+#   - swap `and on` / `unless on` around the short-window selector, or set
+#     burn.shortWindowMaxSeconds below 18000: burst stops firing;
+#   - set burn.shortWindowMaxSeconds above 604800: night stops firing.
 rule_files:
   - rules.yaml
 evaluation_interval: 1m
@@ -17,22 +31,47 @@ tests:
       - series: 'loomwatch_agent_healthy{provider="zai",account_id="1"}'
         values: "1x360"
       # Five teeth of six hours each: 0 to 71 in 5-minute steps, then back to 0.
+      # Resets at 69h, so 40h remain at the evaluation time below - inside the
+      # 48h horizon gate.
       - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="tokens",account_id="1"}'
         values: "0+1x71 0+1x71 0+1x71 0+1x71 0+1x71"
       - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="tokens",account_id="1"}'
         values: "604800x360"
-      # Resets at 69h, so 40h remain at the evaluation time below - inside the
-      # 48h horizon gate.
       - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="tokens",account_id="1"}'
         values: "248400x360"
-      # The control: same account, same reset, level flat at 50. A rule that
-      # fires for everything would fire here too.
+      # The control: flat at 50, same reset. A rule that fires for everything
+      # would fire here too.
       - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="flat",account_id="1"}'
         values: "50x360"
       - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="flat",account_id="1"}'
         values: "604800x360"
       - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="flat",account_id="1"}'
         values: "248400x360"
+      # A rolling five-hour window with no new use: the level only drifts down,
+      # 100 to 13 over 29 hours. Resets in an hour.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="rolling",account_id="1"}'
+        values: "100-0.25x360"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="rolling",account_id="1"}'
+        values: "18000x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="rolling",account_id="1"}'
+        values: "108000x360"
+      # A five-hour window idle at 10 for 28 hours, then 5 points every five
+      # minutes: 70 at the evaluation time, 60% an hour, resets in two hours.
+      # A day's average of that is 2.5% an hour and projects 75.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="burst",account_id="1"}'
+        values: "10x336 15+5x24"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="burst",account_id="1"}'
+        values: "18000x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="burst",account_id="1"}'
+        values: "111600x360"
+      # A weekly window rising 3% an hour from 5h to 23h, flat at 69 since.
+      # Resets in 20h: at the day's pace of 2.25% an hour it projects 114.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="night",account_id="1"}'
+        values: "0+0.25x276 69x84"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="night",account_id="1"}'
+        values: "604800x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="night",account_id="1"}'
+        values: "176400x360"
     alert_rule_test:
       - alertname: LoomwatchQuotaBurnsBeforeReset
         eval_time: 29h
@@ -47,4 +86,26 @@ tests:
             exp_annotations:
               runbook_url: https://github.com/madduck-tech/loomwatch/blob/main/docs/runbooks/README.md#loomwatchquotaburnsbeforereset
               summary: Quota tokens of zai (account 1) is on track to run out before it resets
+              description: "This is high consumption in the only measurable sense: not an absolute number of tokens, but the rate relative to the plan's own quota, projected to the moment that quota resets."
+          - exp_labels:
+              severity: warning
+              subsystem: llm-quota
+              provider: zai
+              quota_type: burst
+              account_id: "1"
+              team: platform
+            exp_annotations:
+              runbook_url: https://github.com/madduck-tech/loomwatch/blob/main/docs/runbooks/README.md#loomwatchquotaburnsbeforereset
+              summary: Quota burst of zai (account 1) is on track to run out before it resets
+              description: "This is high consumption in the only measurable sense: not an absolute number of tokens, but the rate relative to the plan's own quota, projected to the moment that quota resets."
+          - exp_labels:
+              severity: warning
+              subsystem: llm-quota
+              provider: zai
+              quota_type: night
+              account_id: "1"
+              team: platform
+            exp_annotations:
+              runbook_url: https://github.com/madduck-tech/loomwatch/blob/main/docs/runbooks/README.md#loomwatchquotaburnsbeforereset
+              summary: Quota night of zai (account 1) is on track to run out before it resets
               description: "This is high consumption in the only measurable sense: not an absolute number of tokens, but the rate relative to the plan's own quota, projected to the moment that quota resets."

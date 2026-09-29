@@ -4,21 +4,28 @@
 {{- $rb := .Values.metrics.prometheusRule.runbookUrlBase }}
 {{- $remaining := printf "%s (loomwatch_quota_reset_timestamp_seconds{%s} - time())" $by $sel }}
 {{- $burn := .Values.metrics.prometheusRule.burn }}
-{{- $level := printf "round(%s (loomwatch_quota_utilization_percent{%s}), 0.01)" $by $sel }}
+{{- $level := printf "%s (loomwatch_quota_utilization_percent{%s})" $by $sel }}
 {{- $short := printf "(%s (loomwatch_quota_window_seconds{%s}) <= %v)" $by $sel $burn.shortWindowMaxSeconds }}
 {{/*
-  Consumption in percent per second, the same estimator the dashboard uses.
+  Consumption in percent per second, the same estimator as the dashboard's
+  pace(): the rises of the level between steps, summed, divided by the time
+  the samples cover.
 
-  rate() rather than deriv(): the quota gauge falls whenever the provider gives
-  quota back - at the end of a window, and MiniMax also a few times a day in the
-  middle of one - and deriv() fits a line through that sawtooth. rate() reads a
-  fall as a counter reset and adds up the rises only. Rounding first keeps float
-  noise (7 vs 7.000000000000001) from counting as a reset.
+  Not deriv(): a provider that gives quota back mid-window turns the level into
+  a sawtooth, and a line fitted through it describes the falls. Not rate()
+  either: rate() reads a fall as a reset to zero and adds the whole level after
+  it, so a rolling window drifting from 50 to 49 counted 49 points consumed.
+  Divided by covered time rather than the full window, so a young series is
+  not diluted to nothing.
 
   Short windows are measured over shortTrendWindow, because a day's average
   dilutes the working hours with the night; longer ones over trendWindow.
 */}}
-{{- $rate := printf "((rate((%s)[%s:1m]) and on (provider, quota_type, account_id) %s) or (rate((%s)[%s:5m]) unless on (provider, quota_type, account_id) %s))" $level $burn.shortTrendWindow $short $level $burn.trendWindow $short }}
+{{- $shortRise := printf "clamp_min(%s - %s (loomwatch_quota_utilization_percent{%s} offset 2m), 0)" $level $by $sel }}
+{{- $longRise := printf "clamp_min(%s - %s (loomwatch_quota_utilization_percent{%s} offset 5m), 0)" $level $by $sel }}
+{{- $shortPace := printf "(sum_over_time((%s)[%s:2m]) / (count_over_time((%s)[%s:2m]) * 120))" $shortRise $burn.shortTrendWindow $shortRise $burn.shortTrendWindow }}
+{{- $longPace := printf "(sum_over_time((%s)[%s:5m]) / (count_over_time((%s)[%s:5m]) * 300))" $longRise $burn.trendWindow $longRise $burn.trendWindow }}
+{{- $rate := printf "((%s and on (provider, quota_type, account_id) %s) or (%s unless on (provider, quota_type, account_id) %s))" $shortPace $short $longPace $short }}
 {{/*
   The team join, or nothing at all when no team is configured.
 

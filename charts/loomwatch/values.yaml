@@ -812,10 +812,11 @@ metrics:
     ## property of the series, not of its name: a token quota can reset weekly
     ## while a "general" quota resets every five hours.
     ##
-    ## The pace is rate() over the quota's rises, not deriv() over its level:
-    ## a provider that gives quota back mid-window turns the level into a
-    ## sawtooth, and a line fitted through it describes the falls rather than
-    ## the consumption.
+    ## The pace is the sum of the quota's rises between steps, per second of
+    ## observed time - not deriv() over its level and not rate(). A provider
+    ## that gives quota back mid-window turns the level into a sawtooth: a
+    ## line fitted through it describes the falls, and rate() counts every
+    ## fall as a reset to zero, adding the whole level after it.
     ##
     ## @param metrics.prometheusRule.burn.trendWindow Range over which the burn rate of longer windows is measured
     ## @param metrics.prometheusRule.burn.shortTrendWindow Range over which the burn rate of short windows is measured

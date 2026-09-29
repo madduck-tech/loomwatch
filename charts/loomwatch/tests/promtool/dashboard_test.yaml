@@ -2,19 +2,28 @@
 #
 # check-chart-rules.sh writes every panel query to dashboard-rules.yaml as a
 # recording rule named after its panel and refId: p2_A is "Needs attention",
-# p3_A is "Not judged", p1_B and p1_C are the "Resets in" and "Breaches in"
-# columns of the table. $stale_after arrives as the chart renders it (five
-# times the default pollInterval of 120, so 600).
+# p3_A is "Not judged", p1_B, p1_C and p1_G are the "Resets in", "Breaches in"
+# and "Resets at" columns of the table. $stale_after arrives as the chart
+# renders it (five times the default pollInterval of 120, so 600).
 #
-# The four rows below are the four states the forecast column distinguishes.
+# One row per state the forecast column distinguishes, plus the shapes that
+# broke earlier estimators. Evaluated at 29h.
 #
 # Mutations that turn this red:
-#   - replace rate( with deriv( in burn_rate() of scripts/make-dashboard.py:
-#     the sawtooth row loses its forecast and reads "won't breach";
-#   - drop fresh() from breaching() or stale_rows() from needs_attention():
-#     the stale account stops counting, or reads as a forecast;
-#   - drop the `> 0` in unjudgeable(): "Not judged" counts the idle row the
-#     table does not show.
+#   - replace pace() in scripts/make-dashboard.py with rate() over the level:
+#     rolling reads as a breach; with deriv(): sawtooth and young lose theirs;
+#   - divide pace() by the full window instead of the covered time: young
+#     reads "won't breach";
+#   - swap `and on` / `unless on` in burn_rate(), or set
+#     SHORT_WINDOW_MAX_SECONDS to -1 or 99999999: burst or night flips;
+#   - drop the comparison with the reset in breaches_before_reset(): slow
+#     shows a forecast instead of "won't breach";
+#   - drop the AT_LIMIT branch of column C, or `util >= 100` in breaching():
+#     full reads "won't breach", or drops out of Needs attention;
+#   - drop stale_rows() from needs_attention(), or the stale branches of B, C
+#     and G: the stale account stops counting, or shows a date gone by;
+#   - drop the `> 0` in unjudgeable(), or its at-limit exclusion: "Not judged"
+#     counts the idle row or the full one.
 rule_files:
   - dashboard-rules.yaml
 evaluation_interval: 1m
@@ -26,29 +35,86 @@ tests:
         values: "1x360"
       - series: 'loomwatch_agent_last_cycle_age_seconds{provider="zai",account_id="1"}'
         values: "20x360"
-      # A weekly window the provider keeps giving back: five six-hour teeth,
-      # 0 to 71. Consumption runs at about 12% an hour; the reset is 40h away
-      # at the evaluation time, so it breaches in about three and a half hours.
-      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="tokens",account_id="1"}'
+
+      # sawtooth: a weekly window the provider keeps giving back - five
+      # six-hour teeth, 0 to 71. About 12% an hour, reset 40h away: breaches
+      # in about three and a half hours.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="sawtooth",account_id="1"}'
         values: "0+1x71 0+1x71 0+1x71 0+1x71 0+1x71"
-      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="tokens",account_id="1"}'
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="sawtooth",account_id="1"}'
         values: "604800x360"
-      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="tokens",account_id="1"}'
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="sawtooth",account_id="1"}'
         values: "248400x360"
-      # Flat at 50 with a reset: judged, and the answer is "won't breach".
+
+      # flat: 50 with a reset - judged, "won't breach".
       - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="flat",account_id="1"}'
         values: "50x360"
       - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="flat",account_id="1"}'
         values: "604800x360"
       - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="flat",account_id="1"}'
         values: "248400x360"
-      # In use, no reset published: "no forecast", and counted as not judged.
+
+      # time: in use, no reset published - "no forecast", not judged.
       - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="time",account_id="1"}'
         values: "10x360"
-      # Idle, no reset published: the table leaves it out, so nothing may
-      # count it.
+
+      # idle: zero, no reset - the table leaves it out, so nothing counts it.
       - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="idle",account_id="1"}'
         values: "0x360"
+
+      # rolling: a five-hour rolling window with no new use, drifting from 100
+      # down to 13. Nothing is consumed, so it will not breach.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="rolling",account_id="1"}'
+        values: "100-0.25x360"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="rolling",account_id="1"}'
+        values: "18000x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="rolling",account_id="1"}'
+        values: "108000x360"
+
+      # young: a weekly window that appeared twenty minutes ago at 40 and gains
+      # 5 points every five minutes - 60 now, out in about forty minutes.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="young",account_id="1"}'
+        values: "_x344 40+5x15"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="young",account_id="1"}'
+        values: "604800x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="young",account_id="1"}'
+        values: "248400x360"
+
+      # slow: rising 0.12% an hour from 10 - it gets there, but in about
+      # 750 hours, long after the reset 40h away.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="slow",account_id="1"}'
+        values: "10+0.01x360"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="slow",account_id="1"}'
+        values: "604800x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="slow",account_id="1"}'
+        values: "248400x360"
+
+      # burst: a five-hour window idle at 10 for 28 hours, then 60% an hour -
+      # 70 now, out in half an hour, reset in two. A day's average says 2.5%
+      # an hour and "won't breach".
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="burst",account_id="1"}'
+        values: "10x336 15+5x24"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="burst",account_id="1"}'
+        values: "18000x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="burst",account_id="1"}'
+        values: "111600x360"
+
+      # night: a weekly window that rose 3% an hour all day and has been flat
+      # at 69 for six hours. The day's pace, 2.25% an hour, reaches the limit
+      # in about fourteen hours, before the reset 20h away; the last hour's
+      # pace is zero.
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="night",account_id="1"}'
+        values: "0+0.25x276 69x84"
+      - series: 'loomwatch_quota_window_seconds{provider="zai",quota_type="night",account_id="1"}'
+        values: "604800x360"
+      - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="night",account_id="1"}'
+        values: "176400x360"
+
+      # full: at its limit, no reset published - "at limit", needs attention,
+      # and not "not judged".
+      - series: 'loomwatch_quota_utilization_percent{provider="zai",quota_type="full",account_id="1"}'
+        values: "100x360"
+
       # Account 2's collector has not completed a poll for eleven days. Its
       # last reading and its reset time are frozen, the reset long past.
       - series: 'loomwatch_agent_healthy{provider="zai",account_id="2"}'
@@ -62,25 +128,46 @@ tests:
       - series: 'loomwatch_quota_reset_timestamp_seconds{provider="zai",quota_type="tokens",account_id="2"}'
         values: "3600x360"
     promql_expr_test:
-      # The sawtooth breaches before its reset, and the forecast says so with a
-      # real duration rather than a sentinel.
-      - expr: (dashboard:p1_C{quota_type="tokens",account_id="1"} > bool 0) * (dashboard:p1_C{quota_type="tokens",account_id="1"} < bool 144000)
+      # A real duration, shorter than the time left before the reset, for
+      # every row that breaches: sawtooth (40h left), young (40h), burst (2h),
+      # night (20h).
+      - expr: |
+          (dashboard:p1_C{account_id="1",quota_type=~"sawtooth|young|burst|night"} > bool 0)
+          * (dashboard:p1_C{account_id="1",quota_type=~"sawtooth|young|burst|night"}
+             < bool on (provider, quota_type, account_id) dashboard:p1_B)
         eval_time: 29h
         exp_samples:
-          - labels: '{provider="zai",quota_type="tokens",account_id="1"}'
+          - labels: '{provider="zai",quota_type="sawtooth",account_id="1"}'
             value: 1
-      - expr: dashboard:p1_C{quota_type="flat"}
+          - labels: '{provider="zai",quota_type="young",account_id="1"}'
+            value: 1
+          - labels: '{provider="zai",quota_type="burst",account_id="1"}'
+            value: 1
+          - labels: '{provider="zai",quota_type="night",account_id="1"}'
+            value: 1
+      # The young row's forecast is its own pace, not one diluted across the
+      # day: about forty minutes, well under two hours.
+      - expr: dashboard:p1_C{quota_type="young"} < bool 7200
+        eval_time: 29h
+        exp_samples:
+          - labels: '{provider="zai",quota_type="young",account_id="1"}'
+            value: 1
+      # Won't breach (3153600000), no forecast (6307200000), at limit (0).
+      - expr: dashboard:p1_C{account_id="1",quota_type=~"flat|rolling|slow|time|full"}
         eval_time: 29h
         exp_samples:
           - labels: 'dashboard:p1_C{provider="zai",quota_type="flat",account_id="1"}'
             value: 3153600000
-      - expr: dashboard:p1_C{quota_type="time"}
-        eval_time: 29h
-        exp_samples:
+          - labels: 'dashboard:p1_C{provider="zai",quota_type="rolling",account_id="1"}'
+            value: 3153600000
+          - labels: 'dashboard:p1_C{provider="zai",quota_type="slow",account_id="1"}'
+            value: 3153600000
           - labels: 'dashboard:p1_C{provider="zai",quota_type="time",account_id="1"}'
             value: 6307200000
-      # The stale account: "stale data" in the forecast, "unknown" for the
-      # reset instead of a date eleven days gone.
+          - labels: 'dashboard:p1_C{provider="zai",quota_type="full",account_id="1"}'
+            value: 0
+      # The stale account: "stale data" in the forecast, "unknown" for both
+      # reset columns instead of a date eleven days gone.
       - expr: dashboard:p1_C{account_id="2"}
         eval_time: 29h
         exp_samples:
@@ -91,18 +178,24 @@ tests:
         exp_samples:
           - labels: 'dashboard:p1_B{provider="zai",quota_type="tokens",account_id="2"}'
             value: -1
+      - expr: dashboard:p1_G{account_id="2"}
+        eval_time: 29h
+        exp_samples:
+          - labels: 'dashboard:p1_G{provider="zai",quota_type="tokens",account_id="2"}'
+            value: -1
       # The idle row without a reset is not on the table.
       - expr: dashboard:p1_C{quota_type="idle"}
         eval_time: 29h
         exp_samples: []
-      # Needs attention: the breaching sawtooth and the stale account's row.
+      # Needs attention: the four breaching rows, the full one and the stale
+      # account's row.
       - expr: dashboard:p2_A
         eval_time: 29h
         exp_samples:
           - labels: 'dashboard:p2_A'
-            value: 2
-      # Not judged: the one visible row without a reset time. Not the idle
-      # row, and not the stale account.
+            value: 6
+      # Not judged: the one visible row without a reset time. Not idle, not
+      # full, not the stale account.
       - expr: dashboard:p3_A
         eval_time: 29h
         exp_samples:

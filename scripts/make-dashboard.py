@@ -143,15 +143,33 @@ def reset_at(sel):
 SHORT_WINDOW_MAX_SECONDS = 21600
 
 
-def burn_rate(sel):
-    """Consumption in percent per second: how fast the quota fills, drops aside.
+def pace(sel, window, step, step_seconds):
+    """Rises only, summed over `window` in `step`s, per second of observed time.
 
-    rate(), not deriv(). A quota gauge rises while it is consumed and falls only
-    when the provider gives quota back - at the end of its window, and, as it
-    turned out, at other times too. rate() reads every fall as a counter reset
-    and adds up the rises only, so the number is the speed of consumption
-    whatever the provider did in between. The headroom is taken from the
-    current reading, so a fall shows up there, at the moment it happens.
+    Each step contributes how much the level went UP since the step before it,
+    and nothing when it went down. That is the consumption: a quota gauge rises
+    while it is used and falls only when quota comes back - a window reset, a
+    provider returning quota mid-window, or a rolling window letting old use
+    age out.
+
+    Not rate(). rate() reads a fall as a counter reset to zero and adds the
+    whole level after it, so a fall from 50 to 49 counted as 49 points
+    consumed: a rolling window whose level drifts down a little each poll
+    forecast "out in six minutes" while nothing was being used at all.
+
+    Divided by the time the data actually covers, not by the full window. A
+    series twenty minutes old spread over 24h read one seventy-second of its
+    real pace, and printed "won't breach" for a quota forty minutes from empty.
+    A series with no two samples a step apart has no pace at all; unjudgeable()
+    counts it rather than calling it safe.
+    """
+    before = f"max by (provider, quota_type, account_id) (loomwatch_quota_utilization_percent{{{sel}}} offset {step})"
+    rise = f"clamp_min({util(sel)} - {before}, 0)"
+    return f"(sum_over_time(({rise})[{window}:{step}]) / (count_over_time(({rise})[{window}:{step}]) * {step_seconds}))"
+
+
+def burn_rate(sel):
+    """Consumption in percent per second: how fast the quota fills, falls aside.
 
     Both earlier estimators failed on the falls. deriv() over 24h fitted one
     line through the sawtooth and printed -837%, then, clamped at zero, a calm
@@ -163,26 +181,21 @@ def burn_rate(sel):
     is for - were never judged. At the time they were filling at about 20% a
     day against seven days of window, and the board said nothing.
 
+    pace() counts the rises only, so the falls no longer bend the rate; the
+    headroom is taken from the current reading, so a fall shows up there, at
+    the moment it happens.
+
     The window is picked by the quota's own length. A five-hour window is
     decided by the pace of the last hour; a day's average dilutes the working
     hours with the night. A weekly window is decided by the pace of the last
     day. A quota whose provider declares no window is treated as long.
-
-    Rounding before rate() is a guard against float noise. The collector
-    derives percentages by division, and the same reading can come back as 7
-    and 7.000000000000001; a fall of 1e-15 would count as a reset and add the
-    whole level to the rate.
-
-    Mutation that turns charts/loomwatch/tests/promtool/dashboard_test.yaml
-    red: replace rate( with deriv( here - the sawtooth row loses its forecast.
     """
     window = f"max by (provider, quota_type, account_id) (loomwatch_quota_window_seconds{{{sel}}})"
     short = f"({window} <= {SHORT_WINDOW_MAX_SECONDS})"
-    level = f"round({util(sel)}, 0.01)"
     return f"""
       (
-        ((rate(({level})[1h:2m])) and on (provider, quota_type, account_id) {short})
-        or ((rate(({level})[24h:5m])) unless on (provider, quota_type, account_id) {short})
+        ({pace(sel, "1h", "2m", 120)} and on (provider, quota_type, account_id) {short})
+        or ({pace(sel, "24h", "5m", 300)} unless on (provider, quota_type, account_id) {short})
       )
     """
 
@@ -245,18 +258,28 @@ def breaches_before_reset(sel):
 
 
 def unjudgeable(sel):
-    """Quotas the forecast has nothing to say about: no reset time published.
+    """Quotas the forecast has nothing to say about.
 
     A flat quota with a known reset IS judged: the answer is that it will not
     breach. A quota whose window fell inside the averaging period is judged too
-    - burn_rate() reads through the fall. What is left is a provider that
-    publishes no reset time, so there is no moment to forecast to.
+    - pace() reads through the fall. A quota already at its limit is judged:
+    it is out. What is left:
+
+      - a provider that publishes no reset time, so there is no moment to
+        forecast to;
+      - a series too young to have two samples a step apart, so there is no
+        pace yet. It lasts one step; calling it "won't breach" would be a
+        claim made without a single measurement.
 
     Restricted to the rows the table shows. The count used to include rows the
     table filters out - zero, and no reset time - so it read 12 beside a table
     with ten of them.
     """
-    return in_team(fresh(f"({util(sel)} > 0) unless on (provider, quota_type, account_id) {reset_at(sel)}"))
+    at_limit = f"({util(sel)} >= 100)"
+    no_reset = f"(({util(sel)} > 0) unless on (provider, quota_type, account_id) {reset_at(sel)})"
+    no_pace = (f"(({util(sel)} and on (provider, quota_type, account_id) {reset_at(sel)})"
+               f" unless on (provider, quota_type, account_id) {burn_rate(sel)})")
+    return in_team(fresh(f"({no_reset} or {no_pace}) unless on (provider, quota_type, account_id) {at_limit}"))
 
 
 # The value a row carries when there is no forecast for it.
@@ -297,13 +320,13 @@ def breaching(sel):
     exists to notice exactly that. Being out of quota is the most urgent state
     there is, not an unmeasured one.
 
-    Stale accounts are excluded here and counted by needs_attention() instead:
-    a frozen reading neither breaches nor stays safe.
+    Stale accounts are not filtered out here: needs_attention() adds every row
+    of a stale account anyway, and a union counts a row once.
     """
-    return in_team(fresh(f"""
+    return in_team(f"""
         ({util(sel)} >= 100)
         or {breaches_before_reset(sel)}
-    """))
+    """)
 
 
 def needs_attention(sel):
