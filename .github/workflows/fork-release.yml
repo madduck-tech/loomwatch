@@ -147,17 +147,33 @@ jobs:
             tech.madduck.upstream.repository=onllm-dev/onWatch
             tech.madduck.upstream.version=${{ steps.upstream.outputs.version }}
 
+      # linux/arm64 since 1.15.10: the deployment runs loomwatch on an ARM
+      # board (Orange Pi). The builder stage cross-compiles natively
+      # (`--platform=$BUILDPLATFORM` in the Dockerfile), so no QEMU step.
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           target: runtime
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
+
+      # Deployments pin the index digest, and a node pulls its own platform
+      # from it. An index that lost a platform would surface only as a pull
+      # failure on that node, so the release fails here instead.
+      - name: Verify both platforms are published
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}@${{ steps.build.outputs.digest }}
+        run: |
+          platforms="$(docker buildx imagetools inspect "$IMAGE" --format '{{json .Manifest.Manifests}}' \
+            | python3 -c 'import json,sys; print(" ".join(sorted(m["platform"]["os"] + "/" + m["platform"]["architecture"] for m in json.load(sys.stdin) if m.get("platform", {}).get("os") != "unknown")))')"
+          echo "published: $platforms"
+          test "$platforms" = "linux/amd64 linux/arm64"
 
       # Charts go to the same registry as the image, as an OCI artifact. No
       # separate index, no GitHub Pages, nothing extra to keep alive: the chart
